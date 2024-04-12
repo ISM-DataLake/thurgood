@@ -5,7 +5,7 @@ use base64::engine::general_purpose::STANDARD as BASE_64;
 use base64::Engine as _;
 
 pub struct RbToJson {
-    seen: HashMap<*const RbRef, usize>,
+    seen: HashMap<*const RbRef, Value>,
     next_id: usize,
 }
 
@@ -32,12 +32,13 @@ impl RbToJson {
             RbAny::Ref(r) => {
                 if r.contains_ref() {
                     let ptr = rc_get_ptr(r);
-                    if let Some(obj_id) = self.seen.get(&ptr) {
-                        Value::String(format!("@{}", obj_id))
+                    if let Some(obj_json) = self.seen.get(&ptr) {
+                        obj_json.to_owned()
                     } else {
-                        self.seen.insert(ptr, self.next_id);
+                        let obj_json = self.conv_ref(r)?;
+                        self.seen.insert(ptr, (&obj_json).to_owned());
                         self.next_id += 1;
-                        self.conv_ref(r)?
+                        obj_json.to_owned()
                     }
                 } else {
                     self.conv_ref(r)?
@@ -53,18 +54,28 @@ impl RbToJson {
             RbRef::Float(v) => Value::Number(Number::from_f64(v.0 as f64)?),
             RbRef::BigInt(v) => Value::String(v.to_string()),
             RbRef::Array(v) => {
-                let mut map = Map::new();
-                map.ezset("@", "Array");
-                map.ezset("@id", obj_id);
+                // let mut map = Map::new();
+                // map.ezset("@", "Array");
+                // map.ezset("@id", obj_id);
                 let mut ar = Vec::with_capacity(v.capacity());
                 for it in v.iter() {
                     ar.push(self.conv_any(it)?);
                 }
-                map.ezset("data", Value::Array(ar));
-                Value::Object(map)
+                // map.ezset("data", Value::Array(ar));
+                Value::Array(ar)
             },
             RbRef::Str(v) => Value::String(v.clone()),
-            RbRef::StrI { .. } => todo!(),
+            RbRef::StrI { content, metadata } => {
+                
+                let mut map = Map::new();
+                map.ezset("data", content.clone());
+                map.ezset("metadata", metadata.values().map(|v| {
+                    v.to_json().unwrap().to_owned()
+                }).collect::<Vec<Value>>());
+                map.ezset("@", "StringI");
+                map.ezset("@id", obj_id);
+                Value::Object(map)
+            },
             // TODO use an object and include flags
             RbRef::Regex { content, flags } => {
                 let mut map = Map::new();
@@ -127,17 +138,23 @@ impl RbToJson {
 
     fn conv_hash(&mut self, value: &RbHash) -> Option<Value> {
         let mut map = Map::new();
-        map.ezset("@", "Hash");
-        map.ezset("@id", self.next_id - 1);
+        // map.ezset("@", "Hash");
+        // map.ezset("@id", self.next_id - 1);
 
-        let mut pairs = Vec::new();
+        // let mut pairs = Vec::new();
         for it in value.map.iter() {
-            pairs.push( Value::Array(vec![self.conv_any(it.0)?, self.conv_any(it.1)?]) );
+            let k = self.conv_any(it.0)?;
+            if k.is_string() {
+                map.ezset(k.as_str()?.to_string(), self.conv_any(it.1)?);
+            } else {
+                map.ezset(k.to_string(), self.conv_any(it.1)?);
+            }
+            // pairs.push( Value::Array(vec![self.conv_any(it.0)?, self.conv_any(it.1)?]) );
         }
-        map.ezset("data", pairs);
-        if let Some(def) = &value.default {
-            map.ezset("default", self.conv_any(def)?);
-        }
+        // map.ezset("data", pairs);
+        // if let Some(def) = &value.default {
+            // map.ezset("default", self.conv_any(def)?);
+        // }
         Some(Value::Object(map))
     }
 
